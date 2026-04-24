@@ -1,5 +1,5 @@
-from fastapi import FastAPI
-from app.services.llm_service import ask_llm
+from dotenv import load_dotenv
+load_dotenv()
 
 app = FastAPI()
 
