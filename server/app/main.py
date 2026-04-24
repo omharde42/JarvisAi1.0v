@@ -1,16 +1,16 @@
+from fastapi import FastAPI
 from dotenv import load_dotenv
+from pydantic import BaseModel
+from app.core.brain import process_command
+
 load_dotenv()
 
 app = FastAPI()
 
-@app.get("/")
-def root():
-    return {"message": "Jarvis is running"}
+class JarvisRequest(BaseModel):
+    message: str
 
 @app.post("/jarvis")
-async def jarvis(query: dict):
-    user_input = query.get("message")
-    
-    response = ask_llm(user_input)
-    
-    return {"response": response}
+async def jarvis(req: JarvisRequest):
+    result = process_command(req.message)
+    return {"response": result}
