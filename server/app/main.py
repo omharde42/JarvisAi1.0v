@@ -1,16 +1,17 @@
+
+
 from fastapi import FastAPI
-from dotenv import load_dotenv
 from pydantic import BaseModel
-from app.core.brain import process_command
+from app.core.brain import JarvisBrain
 
-load_dotenv()
+app = FastAPI(title="Jarvis AI")
 
-app = FastAPI()
+brain = JarvisBrain()
 
-class JarvisRequest(BaseModel):
+class RequestModel(BaseModel):
     message: str
 
 @app.post("/jarvis")
-async def jarvis(req: JarvisRequest):
-    result = process_command(req.message)
-    return {"response": result}
+async def jarvis_api(req: RequestModel):
+    result = await brain.process(req.message)
+    return result
