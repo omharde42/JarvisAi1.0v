@@ -1,3 +1,1 @@
-"""
-Core package initialization
-"""
+"""Core package initialization"""
