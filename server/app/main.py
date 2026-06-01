@@ -1,6 +1,6 @@
 """
 Jarvis AI - Main FastAPI Application
-Production-ready async web server with proper error handling
+Production-ready async web server with proper error handling, caching, and middleware
 """
 
 import logging
@@ -9,11 +9,14 @@ from typing import Dict, Any
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.logger import setup_logging, get_logger
 from app.core.brain import JarvisBrain
+from app.core.rate_limit import RateLimiter
+from app.db.database import init_db, close_db
 
 # Setup logging
 setup_logging()
@@ -21,6 +24,9 @@ logger = get_logger(__name__)
 
 # Initialize brain (singleton)
 brain: JarvisBrain = None
+
+# Initialize rate limiter
+rate_limiter: RateLimiter = None
 
 
 # ============================================================================
@@ -42,6 +48,10 @@ class ProcessRequest(BaseModel):
         default=True,
         description="Whether to use cached responses",
     )
+    user_id: str = Field(
+        default="default_user",
+        description="User identifier",
+    )
 
     class Config:
         """Pydantic config"""
@@ -49,6 +59,7 @@ class ProcessRequest(BaseModel):
             "example": {
                 "message": "Hello, how are you?",
                 "use_cache": True,
+                "user_id": "user123",
             }
         }
 
@@ -87,8 +98,10 @@ class HealthResponse(BaseModel):
     status: str
     brain_status: str | None = None
     llm_provider: str | None = None
+    llm_available: Dict[str, bool] | None = None
     environment: str
     version: str
+    cache_stats: Dict[str, Any] | None = None
 
 
 # ============================================================================
@@ -102,10 +115,23 @@ async def lifespan(app: FastAPI):
     Manage application startup and shutdown
     """
     # Startup
-    global brain
+    global brain, rate_limiter
     try:
         logger.info("🚀 Starting Jarvis AI...")
+
+        # Initialize database
+        if settings.MEMORY_ENABLED:
+            await init_db()
+
+        # Initialize brain
         brain = JarvisBrain()
+
+        # Initialize rate limiter
+        rate_limiter = RateLimiter(
+            max_requests=settings.RATE_LIMIT_REQUESTS,
+            window_seconds=settings.RATE_LIMIT_WINDOW_SECONDS,
+        )
+
         logger.info("✅ Jarvis AI started successfully")
     except Exception as e:
         logger.error(f"❌ Failed to start Jarvis AI: {str(e)}", exc_info=True)
@@ -118,6 +144,8 @@ async def lifespan(app: FastAPI):
         logger.info("🛑 Shutting down Jarvis AI...")
         if brain and brain.cache:
             brain.cache.clear()
+        if settings.MEMORY_ENABLED:
+            await close_db()
         logger.info("✅ Jarvis AI shutdown complete")
     except Exception as e:
         logger.error(f"Error during shutdown: {str(e)}", exc_info=True)
@@ -135,6 +163,19 @@ app = FastAPI(
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
     lifespan=lifespan,
+)
+
+# ============================================================================
+# MIDDLEWARE
+# ============================================================================
+
+# CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
@@ -213,8 +254,10 @@ async def health_check() -> HealthResponse:
             status="healthy" if brain_health.get("status") == "healthy" else "degraded",
             brain_status=brain_health.get("status"),
             llm_provider=brain_health.get("llm_provider"),
+            llm_available=brain_health.get("llm_available"),
             environment=settings.ENVIRONMENT,
             version=settings.APP_VERSION,
+            cache_stats=brain_health.get("cache_stats"),
         )
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}", exc_info=True)
@@ -247,13 +290,24 @@ async def process_message(request: ProcessRequest) -> ProcessResponse:
             detail="Brain not initialized",
         )
 
+    # Rate limiting
+    if settings.RATE_LIMIT_ENABLED and rate_limiter:
+        client_id = request.user_id
+        if not rate_limiter.is_allowed(client_id):
+            remaining = rate_limiter.get_remaining(client_id)
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Rate limit exceeded. Try again in {settings.RATE_LIMIT_WINDOW_SECONDS}s",
+            )
+
     try:
-        logger.info(f"Processing message: {request.message[:100]}...")
+        logger.info(f"Processing message from {request.user_id}: {request.message[:100]}...")
 
         # Call brain with async support
         result = await brain.process(
             prompt=request.message,
             use_cache=request.use_cache,
+            user_id=request.user_id,
         )
 
         # Ensure response is JSON-safe
@@ -299,7 +353,8 @@ async def chat(request: ProcessRequest) -> Dict[str, Any]:
     Alias for /process endpoint
     Provides familiar 'chat' endpoint
     """
-    return await process_message(request)
+    response = await process_message(request)
+    return response.dict()
 
 
 # ============================================================================

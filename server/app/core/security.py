@@ -1,114 +1,130 @@
 """
-Security Module
-API key protection, JWT auth, and request validation
+Security Utilities
+Authentication, authorization, and token management
 """
 
-import hashlib
-import secrets
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-import logging
+import jwt
+import hashlib
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
-class SecurityManager:
+def hash_password(password: str) -> str:
     """
-    Centralized security management
-    Handles authentication, API keys, and rate limiting
+    Hash password using SHA-256
+
+    Args:
+        password: Plain text password
+
+    Returns:
+        Hashed password
     """
+    return hashlib.sha256(password.encode()).hexdigest()
 
-    def __init__(self):
-        """Initialize security manager"""
-        self.rate_limits: Dict[str, list] = {}
-        self.rate_limit_window = 60  # seconds
-        self.rate_limit_max = 100  # requests per window
 
-    def hash_api_key(self, api_key: str) -> str:
-        """
-        Hash an API key for storage
-        Uses SHA256 with salt
-        """
-        salt = secrets.token_hex(16)
-        key_hash = hashlib.pbkdf2_hmac(
-            "sha256",
-            api_key.encode(),
-            salt.encode(),
-            100000,
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """
+    Verify password against hash
+
+    Args:
+        plain_password: Plain text password
+        hashed_password: Hashed password
+
+    Returns:
+        True if passwords match
+    """
+    return hash_password(plain_password) == hashed_password
+
+
+def create_access_token(
+    data: Dict[str, Any],
+    expires_delta: Optional[timedelta] = None,
+) -> str:
+    """
+    Create JWT access token
+
+    Args:
+        data: Data to encode
+        expires_delta: Optional expiration time
+
+    Returns:
+        JWT token string
+    """
+    to_encode = data.copy()
+    
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(
+            minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES
         )
-        return f"{salt}${key_hash.hex()}"
+    
+    to_encode.update({"exp": expire})
+    
+    encoded_jwt = jwt.encode(
+        to_encode,
+        settings.SECRET_KEY,
+        algorithm=settings.ALGORITHM,
+    )
+    
+    return encoded_jwt
 
-    def verify_api_key(self, api_key: str, api_key_hash: str) -> bool:
-        """
-        Verify an API key against its hash
-        """
-        try:
-            salt, key_hash = api_key_hash.split("$")
-            test_hash = hashlib.pbkdf2_hmac(
-                "sha256",
-                api_key.encode(),
-                salt.encode(),
-                100000,
-            ).hex()
-            return secrets.compare_digest(test_hash, key_hash)
-        except Exception as e:
-            logger.error(f"API key verification failed: {str(e)}")
-            return False
 
-    def generate_api_key(self, user_id: str) -> str:
-        """
-        Generate a secure API key for a user
-        Format: jar_<random_64_chars>
-        """
-        random_part = secrets.token_urlsafe(48)
-        return f"jar_{random_part}"
+def verify_token(token: str) -> Optional[Dict[str, Any]]:
+    """
+    Verify and decode JWT token
 
-    def check_rate_limit(self, identifier: str) -> bool:
-        """
-        Check if request is within rate limit
-        Returns True if allowed, False if rate limited
-        """
-        now = datetime.utcnow()
+    Args:
+        token: JWT token string
 
-        # Initialize or clean old entries
-        if identifier not in self.rate_limits:
-            self.rate_limits[identifier] = []
-
-        # Remove old timestamps outside window
-        self.rate_limits[identifier] = [
-            ts
-            for ts in self.rate_limits[identifier]
-            if (now - ts).total_seconds() < self.rate_limit_window
-        ]
-
-        # Check if limit exceeded
-        if len(self.rate_limits[identifier]) >= self.rate_limit_max:
-            return False
-
-        # Add current request timestamp
-        self.rate_limits[identifier].append(now)
-        return True
-
-    def get_rate_limit_status(self, identifier: str) -> Dict[str, int]:
-        """
-        Get rate limit status for an identifier
-        """
-        now = datetime.utcnow()
-
-        if identifier not in self.rate_limits:
-            return {"requests": 0, "limit": self.rate_limit_max}
-
-        # Count requests in window
-        requests = len(
-            [
-                ts
-                for ts in self.rate_limits[identifier]
-                if (now - ts).total_seconds() < self.rate_limit_window
-            ]
+    Returns:
+        Decoded payload or None if invalid
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
         )
+        return payload
+    except jwt.ExpiredSignatureError:
+        logger.warning("Token expired")
+        return None
+    except jwt.InvalidTokenError:
+        logger.warning("Invalid token")
+        return None
+    except Exception as e:
+        logger.error(f"Token verification error: {str(e)}")
+        return None
 
-        return {"requests": requests, "limit": self.rate_limit_max}
+
+def hash_api_key(api_key: str) -> str:
+    """
+    Hash API key
+
+    Args:
+        api_key: Plain text API key
+
+    Returns:
+        Hashed API key
+    """
+    return hashlib.sha256(api_key.encode()).hexdigest()
 
 
-# Global security manager
-security_manager = SecurityManager()
+def verify_api_key(plain_key: str, hashed_key: str) -> bool:
+    """
+    Verify API key against hash
+
+    Args:
+        plain_key: Plain text API key
+        hashed_key: Hashed API key
+
+    Returns:
+        True if keys match
+    """
+    return hash_api_key(plain_key) == hashed_key

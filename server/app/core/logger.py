@@ -1,124 +1,56 @@
 """
-Structured Logging Setup
-JSON logging with file rotation and console output
+Logger Configuration
+Structured logging setup for production
 """
 
 import logging
-import json
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict
 import sys
+from typing import Optional
 
-from app.core.config import settings
+from loguru import logger as loguru_logger
 
 
-class JSONFormatter(logging.Formatter):
+def setup_logging(
+    level: str = "INFO",
+    log_file: Optional[str] = "logs/jarvis.log",
+) -> None:
     """
-    Custom JSON formatter for structured logging
-    Converts log records to JSON for better parsing and analysis
+    Configure logging with loguru
+
+    Args:
+        level: Logging level
+        log_file: Optional log file path
     """
+    # Remove default handler
+    loguru_logger.remove()
 
-    def format(self, record: logging.LogRecord) -> str:
-        """Format log record as JSON"""
-        log_data: Dict[str, Any] = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-            "module": record.module,
-            "function": record.funcName,
-            "line": record.lineno,
-        }
+    # Console handler
+    loguru_logger.add(
+        sys.stderr,
+        format="<level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+        level=level,
+        colorize=True,
+    )
 
-        # Add exception info if present
-        if record.exc_info:
-            log_data["exception"] = self.formatException(record.exc_info)
-
-        return json.dumps(log_data)
-
-
-class ColoredFormatter(logging.Formatter):
-    """
-    Colored console formatter for better readability
-    """
-
-    COLORS = {
-        "DEBUG": "\033[36m",      # Cyan
-        "INFO": "\033[32m",       # Green
-        "WARNING": "\033[33m",    # Yellow
-        "ERROR": "\033[31m",      # Red
-        "CRITICAL": "\033[41m",   # Red background
-    }
-    RESET = "\033[0m"
-
-    def format(self, record: logging.LogRecord) -> str:
-        """Format with colors"""
-        color = self.COLORS.get(record.levelname, self.RESET)
-        formatted = (
-            f"{color}[{record.levelname:8}]{self.RESET} "
-            f"{record.name:30} | "
-            f"{record.getMessage()}"
+    # File handler
+    if log_file:
+        loguru_logger.add(
+            log_file,
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
+            level=level,
+            rotation="500 MB",
+            retention="10 days",
         )
-
-        if record.exc_info:
-            formatted += f"\n{self.formatException(record.exc_info)}"
-
-        return formatted
-
-
-def setup_logging() -> None:
-    """
-    Configure logging for the application
-    Sets up:
-    - Console handler (colored text)
-    - File handler (JSON format)
-    """
-
-    # Create logs directory
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-
-    # Root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(getattr(logging, settings.LOG_LEVEL))
-
-    # Remove existing handlers
-    root_logger.handlers = []
-
-    # ========================================================================
-    # Console Handler (colored output)
-    # ========================================================================
-
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(getattr(logging, settings.LOG_LEVEL))
-    console_handler.setFormatter(ColoredFormatter())
-    root_logger.addHandler(console_handler)
-
-    # ========================================================================
-    # File Handler (JSON format)
-    # ========================================================================
-
-    file_handler = logging.FileHandler(log_dir / "app.log")
-    file_handler.setLevel(logging.DEBUG)  # Always log debug to file
-    file_handler.setFormatter(JSONFormatter())
-    root_logger.addHandler(file_handler)
-
-    # ========================================================================
-    # Suppress noisy loggers
-    # ========================================================================
-
-    logging.getLogger("urllib3").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("google").setLevel(logging.INFO)
-
-    # Log startup
-    logger = logging.getLogger(__name__)
-    logger.info(f"✅ Logging configured - Level: {settings.LOG_LEVEL}, Environment: {settings.ENVIRONMENT}")
 
 
 def get_logger(name: str) -> logging.Logger:
     """
     Get logger instance
+
+    Args:
+        name: Logger name
+
+    Returns:
+        Logger instance
     """
     return logging.getLogger(name)
