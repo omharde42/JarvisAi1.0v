@@ -1,1 +1,1 @@
-"""Database package initialization"""
+# Database module

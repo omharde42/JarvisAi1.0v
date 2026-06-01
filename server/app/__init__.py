@@ -1,3 +1,1 @@
-"""
-JARVIS AI System - App Package
-"""
+# App package
